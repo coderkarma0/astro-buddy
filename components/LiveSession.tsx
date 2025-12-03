@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, FunctionDeclaration, Type } from '@google/genai';
 import { DatingMode, UserProfile } from '../types';
-import { Mic, MicOff, PhoneOff, Radio, Sparkles, Loader2 } from 'lucide-react';
+import { Mic, MicOff, PhoneOff, Radio, Sparkles, Loader2, Pause, Play } from 'lucide-react';
 
 interface LiveSessionProps {
   datingMode: DatingMode;
@@ -50,7 +50,6 @@ async function decodeAudioData(
   return buffer;
 }
 
-// Tool Definitions
 const setProfileTool: FunctionDeclaration = {
   name: 'set_user_profile',
   description: 'Sets the user profile after analyzing birth details. Call this when you have calculated the Sun Sign and Rashi.',
@@ -78,10 +77,10 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [transcript, setTranscript] = useState<string>("");
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
-  // Refs for cleanup
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -104,7 +103,6 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
       streamRef.current = null;
     }
     
-    // Fix: Check state before closing to avoid "Cannot close a closed AudioContext"
     if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
       inputAudioContextRef.current.close();
     }
@@ -122,6 +120,7 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
     setIsConnected(false);
     setTalkingState(false);
     setAnalyzingState(false);
+    setIsPaused(false);
   }, [setTalkingState, setAnalyzingState]);
 
   const initSession = useCallback(async () => {
@@ -139,6 +138,7 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
       const outputNode = outputCtx.createGain();
       outputNode.connect(outputCtx.destination);
 
+      // Get User Media (Audio ONLY - fixes blocking issues)
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
@@ -148,18 +148,15 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
         
         STRICT CONVERSATION FLOW:
         1. When the session starts or the user says Hello, ask for their NAME immediately.
-        2. Once they give their name, greet them warmly by name (e.g., "Hi [Name]! It's written in the stars that we meet.") and IMMEDIATELY ask for their BIRTH DETAILS (Date, Time, and Place of birth) to align their stars.
+        2. Once they give their name, greet them warmly by name and IMMEDIATELY ask for their BIRTH DETAILS (Date, Time, and Place of birth).
         3. Wait for the user to provide the details.
-        4. CRITICAL STEP: When you receive the birth details, FIRST call the tool 'start_analysis' to trigger the analysis animation. Say something like "Hmm, let me read the celestial map for you..."
-        5. Pause for a brief moment (simulated), then calculate their Sun Sign and the corresponding Hindi Rashi.
-        6. Call the tool 'set_user_profile' with their Name, Sun Sign, and Rashi.
-        7. After the tool call, verbally announce their sign with excitement (e.g., "Ah! You are a Leo, the Simha rashi! That explains your radiance.").
-        8. Then, invite them to ask a question related to ${datingMode} or their life.
+        4. CRITICAL: When you receive the birth details, FIRST call 'start_analysis'. Say something like "Consulting the stars..."
+        5. Pause for a brief moment, then calculate their Sun Sign and Hindi Rashi.
+        6. Call 'set_user_profile' with their Name, Sun Sign, and Rashi.
+        7. Announce their sign CLEARLY and CONCISELY ONE TIME. Say "You are a [Sun Sign], known as [Rashi] in Vedic astrology." Do NOT repeat the sign name multiple times.
+        8. Invite them to ask a question related to ${datingMode} or their life.
         
-        TONE:
-        - Casual, like a best friend.
-        - Use emojis in your voice (warmth, chuckles).
-        - Keep responses concise but insightful.
+        TONE: Casual, Best Friend, Mystical.
       `;
 
       const sessionPromise = ai.live.connect({
@@ -183,8 +180,8 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
             processorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
-                 if (inputCtx.state === 'suspended') inputCtx.resume();
-                 if (isMuted) return;
+                 if (inputCtx.state === 'suspended' && !isPaused) inputCtx.resume();
+                 if (isMuted || isPaused) return;
 
                  const inputData = e.inputBuffer.getChannelData(0);
                  const l = inputData.length;
@@ -214,9 +211,7 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-             // 1. Handle Tool Calls
              if (message.toolCall) {
-               console.log("Tool call received", message.toolCall);
                const responses = [];
                for (const fc of message.toolCall.functionCalls) {
                  if (fc.name === 'set_user_profile') {
@@ -226,33 +221,22 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
                       sunSign: args.sunSign,
                       rashi: args.rashi
                     });
-                    setAnalyzingState(false); // Stop analyzing
+                    setAnalyzingState(false); 
                     responses.push({
-                      id: fc.id,
-                      name: fc.name,
-                      response: { result: "Profile set successfully on UI." }
+                      id: fc.id, name: fc.name, response: { result: "Profile set." }
                     });
                  } else if (fc.name === 'start_analysis') {
-                    setAnalyzingState(true); // Start animation
+                    setAnalyzingState(true);
                     responses.push({
-                      id: fc.id,
-                      name: fc.name,
-                      response: { result: "Animation started." }
+                      id: fc.id, name: fc.name, response: { result: "Animation started." }
                     });
                  }
                }
-               
-               // Send Tool Response
                if (responses.length > 0) {
-                 sessionPromise.then(session => {
-                   session.sendToolResponse({
-                     functionResponses: responses
-                   });
-                 });
+                 sessionPromise.then(session => session.sendToolResponse({ functionResponses: responses }));
                }
              }
 
-             // 2. Handle Audio Output
              const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
              if (base64Audio) {
                 setTalkingState(true);
@@ -274,17 +258,12 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
                 }
              }
              
-             // 3. Handle Text Transcription (Subtitles)
              if (message.serverContent?.outputTranscription) {
                 const text = message.serverContent.outputTranscription.text;
-                setTranscript(prev => {
-                    if (prev.length > 200) return text; 
-                    return prev + text;
-                });
+                setTranscript(prev => (prev.length > 200 ? text : prev + text));
              }
-             // Handle turn complete
              if (message.serverContent?.turnComplete) {
-                setTimeout(() => setTranscript(""), 5000); // Fade out after 5s
+                setTimeout(() => setTranscript(""), 6000);
              }
 
              if (message.serverContent?.interrupted) {
@@ -296,24 +275,20 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
                  setTranscript("");
              }
           },
-          onclose: () => {
-            setIsConnected(false);
-            setTalkingState(false);
-            setAnalyzingState(false);
-          },
+          onclose: () => cleanup(),
           onerror: (err) => {
             console.error(err);
             setError("Connection disrupted.");
-            setTalkingState(false);
-            setAnalyzingState(false);
+            cleanup();
           }
         }
       });
       sessionPromiseRef.current = sessionPromise;
     } catch (err: any) {
+      console.error(err);
       setError(err.message || "Failed to initialize");
     }
-  }, [datingMode, setTalkingState, setAnalyzingState, isMuted]);
+  }, [datingMode, setTalkingState, setAnalyzingState, isMuted, isPaused]);
 
   useEffect(() => {
     initSession();
@@ -321,101 +296,183 @@ export const LiveSession: React.FC<LiveSessionProps> = ({ datingMode, isAnalyzin
   }, []);
 
   const toggleMute = () => {
-      if (inputAudioContextRef.current) {
-          if (isMuted) inputAudioContextRef.current.resume();
-          else inputAudioContextRef.current.suspend();
-      }
       setIsMuted(!isMuted);
+  };
+
+  const togglePause = () => {
+      const inputCtx = inputAudioContextRef.current;
+      const outputCtx = outputAudioContextRef.current;
+
+      if (!isPaused) {
+          // Pause logic
+          if (inputCtx && inputCtx.state === 'running') inputCtx.suspend();
+          if (outputCtx && outputCtx.state === 'running') outputCtx.suspend();
+          setIsPaused(true);
+      } else {
+          // Resume logic
+          if (inputCtx && inputCtx.state === 'suspended') inputCtx.resume();
+          if (outputCtx && outputCtx.state === 'suspended') outputCtx.resume();
+          setIsPaused(false);
+      }
+  };
+
+  const sendTextMessage = (text: string) => {
+    if (sessionPromiseRef.current) {
+        sessionPromiseRef.current.then(session => {
+             // Use generic send for client content to simulate user input
+             if (typeof session.send === 'function') {
+                 session.send({
+                     clientContent: {
+                         turns: [{ role: 'user', parts: [{ text }] }],
+                         turnComplete: true
+                     }
+                 });
+             }
+        });
+    }
   };
 
   return (
     <div className="absolute inset-0 z-20 flex flex-col justify-between p-6 pointer-events-none">
       
-      {/* Top Bar: Connection & Mode */}
-      <div className="flex justify-between items-start pointer-events-auto animate-fade-in">
-        <div className="flex items-center gap-2 bg-black/40 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 transition-all duration-300">
-           <Radio size={16} className={isConnected ? "text-green-400 animate-pulse" : "text-gray-400"} />
-           <span className="text-sm font-medium text-white/80">
-              {isConnected ? "Astro Buddy Connected" : "Connecting..."}
-           </span>
-        </div>
-        <button
-          onClick={() => { cleanup(); onEndSession(); }}
-          className="p-3 rounded-full bg-red-500/20 hover:bg-red-500/40 backdrop-blur-md border border-red-500/30 text-red-200 transition-all hover:scale-105"
-        >
-          <PhoneOff size={20} />
-        </button>
+      {/* Decorative Border Frame */}
+      <div className="absolute inset-4 border border-white/10 rounded-3xl pointer-events-none">
+         <div className="absolute top-0 left-0 w-8 h-8 border-t-2 border-l-2 border-astro-gold rounded-tl-xl opacity-60"></div>
+         <div className="absolute top-0 right-0 w-8 h-8 border-t-2 border-r-2 border-astro-gold rounded-tr-xl opacity-60"></div>
+         <div className="absolute bottom-0 left-0 w-8 h-8 border-b-2 border-l-2 border-astro-gold rounded-bl-xl opacity-60"></div>
+         <div className="absolute bottom-0 right-0 w-8 h-8 border-b-2 border-r-2 border-astro-gold rounded-br-xl opacity-60"></div>
       </div>
 
-      {/* Center: Profile Card OR Analysis Loader */}
-      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-md pointer-events-none">
+      {/* Error Overlay */}
+      {error && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md pointer-events-auto">
+              <div className="bg-red-900/50 p-6 rounded-2xl border border-red-500/50 text-center max-w-md mx-4">
+                  <h3 className="text-xl font-mystical text-red-200 mb-2">Connection Error</h3>
+                  <p className="text-white/80">{error}</p>
+                  <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-red-500 hover:bg-red-600 rounded-lg text-white text-sm font-bold uppercase tracking-wide">
+                      Retry
+                  </button>
+              </div>
+          </div>
+      )}
+
+      {/* Top Bar */}
+      <div className="flex justify-between items-start pointer-events-auto z-30 animate-fade-in">
+        <div className="flex items-center gap-3 bg-black/60 backdrop-blur-xl px-5 py-2 rounded-full border border-white/20 shadow-lg">
+           <Radio size={16} className={isConnected && !isPaused ? "text-astro-gold animate-pulse" : "text-gray-400"} />
+           <span className="text-sm font-bold tracking-wide text-white font-sans uppercase">
+              {isPaused ? "Session Paused" : (isConnected ? "Live Connection" : "Initializing...")}
+           </span>
+        </div>
+      </div>
+
+      {/* Center Content */}
+      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg pointer-events-none z-20">
         
-        {/* Analysis Loader Overlay */}
-        {isAnalyzing && (
+        {/* Paused State Overlay */}
+        {isPaused && (
+            <div className="flex flex-col items-center justify-center animate-fade-in backdrop-blur-md bg-black/60 p-8 rounded-3xl border border-white/10 shadow-2xl">
+                <Pause size={48} className="text-white/80 mb-4" />
+                <h3 className="text-2xl font-mystical text-white tracking-widest uppercase">Paused</h3>
+            </div>
+        )}
+
+        {/* Analysis Loader */}
+        {isAnalyzing && !isPaused && (
             <div className="flex flex-col items-center justify-center animate-fade-in">
-                <div className="relative mb-6">
-                    <Loader2 size={64} className="text-indigo-400 animate-spin" />
-                    <Sparkles size={24} className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-yellow-300 animate-pulse" />
+                <div className="relative mb-8">
+                    <Loader2 size={80} className="text-indigo-400 animate-spin opacity-50" />
+                    <div className="absolute inset-0 flex items-center justify-center animate-pulse-slow">
+                        <Sparkles size={32} className="text-astro-gold" />
+                    </div>
                 </div>
-                <h3 className="text-2xl font-light text-white tracking-widest uppercase animate-pulse-slow">Reading the Stars...</h3>
-                <p className="text-white/50 text-sm mt-2">Aligning birth charts</p>
+                <h3 className="text-2xl font-mystical text-astro-gold tracking-[0.2em] uppercase text-shadow-glow bg-black/40 px-6 py-2 rounded-full backdrop-blur-md border border-astro-gold/20">Reading the Stars...</h3>
             </div>
         )}
 
         {/* User Profile Card */}
-        {userProfile && !isAnalyzing && (
-           <div className="bg-white/5 backdrop-blur-xl border border-white/20 p-6 rounded-3xl shadow-2xl animate-scale-in text-center transform transition-transform duration-500 hover:scale-105">
-              <div className="inline-block p-4 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 mb-4 shadow-lg shadow-purple-500/30 animate-fade-in-up" style={{animationDelay: '0.2s'}}>
-                <Sparkles size={32} className="text-white" />
+        {userProfile && !isAnalyzing && !isPaused && (
+           <div className="bg-slate-950/80 backdrop-blur-xl border border-white/20 p-8 rounded-3xl shadow-2xl animate-scale-in text-center transform transition-all duration-500 hover:border-astro-gold/30">
+              <div className="inline-block p-4 rounded-full bg-gradient-to-br from-indigo-900 to-purple-900 mb-6 shadow-lg shadow-purple-900/40 border border-white/10 animate-fade-in-up">
+                <Sparkles size={32} className="text-astro-gold" />
               </div>
-              <h2 className="text-3xl font-bold text-white mb-1 animate-fade-in-up" style={{animationDelay: '0.3s'}}>{userProfile.name}</h2>
-              <div className="h-px w-24 bg-white/20 mx-auto my-3" />
-              <div className="grid grid-cols-2 gap-4 mt-4 animate-fade-in-up" style={{animationDelay: '0.4s'}}>
-                  <div className="bg-black/20 rounded-xl p-3 border border-white/5">
-                      <p className="text-xs text-indigo-200 uppercase tracking-wider mb-1">Sun Sign</p>
-                      <p className="text-xl font-semibold text-white">{userProfile.sunSign}</p>
+              <h2 className="text-4xl font-mystical text-white mb-2 animate-fade-in-up drop-shadow-lg" style={{animationDelay: '0.1s'}}>{userProfile.name}</h2>
+              <div className="h-px w-32 bg-gradient-to-r from-transparent via-astro-gold to-transparent mx-auto my-4 opacity-50" />
+              <div className="grid grid-cols-2 gap-4 mt-6 animate-fade-in-up" style={{animationDelay: '0.2s'}}>
+                  <div className="bg-black/50 rounded-2xl p-4 border border-white/10">
+                      <p className="text-xs text-indigo-300 font-sans uppercase tracking-widest mb-1">Sun Sign</p>
+                      <p className="text-2xl font-mystical text-white">{userProfile.sunSign}</p>
                   </div>
-                  <div className="bg-black/20 rounded-xl p-3 border border-white/5">
-                      <p className="text-xs text-purple-200 uppercase tracking-wider mb-1">Rashi</p>
-                      <p className="text-xl font-semibold text-white">{userProfile.rashi}</p>
+                  <div className="bg-black/50 rounded-2xl p-4 border border-white/10">
+                      <p className="text-xs text-purple-300 font-sans uppercase tracking-widest mb-1">Rashi</p>
+                      <p className="text-2xl font-mystical text-white">{userProfile.rashi}</p>
                   </div>
               </div>
            </div>
         )}
       </div>
 
-      {/* Bottom Area: Controls & Transcript */}
-      <div className="flex flex-col items-center gap-6 w-full max-w-2xl mx-auto pointer-events-auto">
+      {/* Bottom Controls */}
+      <div className="flex flex-col items-center gap-6 w-full max-w-2xl mx-auto pointer-events-auto z-30 mb-8">
         
-        {/* Transcript Bubble */}
-        {transcript && (
-          <div className="bg-black/60 backdrop-blur-lg px-6 py-4 rounded-2xl border border-white/10 text-center shadow-xl animate-fade-in-up">
-            <p className="text-lg text-white font-light leading-relaxed">
+        {/* Transcript with better readability */}
+        {transcript && !isPaused && (
+          <div className="bg-black/70 backdrop-blur-xl px-8 py-6 rounded-2xl border border-white/10 text-center shadow-xl animate-fade-in-up max-w-xl">
+            <p className="text-lg text-white/90 font-sans font-medium leading-relaxed drop-shadow-md">
               "{transcript}"
             </p>
           </div>
         )}
 
-        {/* Mic Control */}
-        <div className="relative animate-fade-in-up" style={{animationDelay: '0.5s'}}>
-            {/* Visual Ripple for Mic */}
-            <div className={`absolute inset-0 bg-indigo-500 rounded-full blur-xl opacity-20 transition-all duration-300 ${!isMuted ? 'scale-150 animate-pulse' : 'scale-100 opacity-0'}`} />
+        {/* Suggestion Chips */}
+        {!transcript && !isAnalyzing && !isPaused && (
+             <div className="flex gap-2 flex-wrap justify-center animate-fade-in">
+                {["Tell me about my love life", "What is my rising sign?", "Compatibility check?"].map((q, i) => (
+                    <button 
+                        key={i} 
+                        onClick={() => sendTextMessage(q)}
+                        className="px-4 py-2 rounded-full bg-white/5 border border-white/10 text-xs text-white/60 uppercase tracking-wider hover:bg-white/10 hover:scale-105 hover:border-astro-gold/30 cursor-pointer transition-all duration-300"
+                    >
+                        {q}
+                    </button>
+                ))}
+             </div>
+        )}
+
+        <div className="flex items-center gap-6 animate-fade-in-up" style={{animationDelay: '0.3s'}}>
             
             <button
-              onClick={toggleMute}
-              className={`relative z-10 p-6 rounded-full transition-all duration-300 shadow-2xl border ${
-                isMuted 
-                  ? 'bg-gray-800 border-gray-600 text-gray-400 hover:bg-gray-700' 
-                  : 'bg-indigo-600 border-indigo-400 text-white hover:bg-indigo-500 hover:scale-110'
-              }`}
+                onClick={() => { cleanup(); onEndSession(); }}
+                className="p-4 rounded-full bg-red-500/20 border border-red-500/30 text-red-200 hover:bg-red-500/30 hover:scale-105 transition-all backdrop-blur-md"
+                title="End Session"
             >
-              {isMuted ? <MicOff size={32} /> : <Mic size={32} />}
+               <PhoneOff size={24} />
+            </button>
+
+            {/* Mic Button */}
+            <div className="relative">
+                <div className={`absolute inset-0 bg-astro-gold rounded-full blur-xl opacity-20 transition-all duration-300 ${!isMuted && !isPaused ? 'scale-150 animate-pulse' : 'scale-100 opacity-0'}`} />
+                <button
+                onClick={toggleMute}
+                disabled={isPaused}
+                className={`relative z-10 p-6 rounded-full transition-all duration-300 shadow-2xl border-2 ${
+                    isMuted || isPaused
+                    ? 'bg-slate-800 border-slate-600 text-slate-400' 
+                    : 'bg-gradient-to-br from-indigo-600 to-purple-700 border-indigo-300 text-white hover:scale-105 hover:shadow-[0_0_20px_rgba(79,70,229,0.5)]'
+                }`}
+                >
+                {isMuted ? <MicOff size={32} /> : <Mic size={32} />}
+                </button>
+            </div>
+
+            <button
+                onClick={togglePause}
+                className="p-4 rounded-full bg-white/10 border border-white/20 text-white hover:bg-white/20 hover:scale-105 transition-all backdrop-blur-md"
+                title={isPaused ? "Resume Session" : "Pause Session"}
+            >
+                {isPaused ? <Play size={24} fill="currentColor" /> : <Pause size={24} fill="currentColor" />}
             </button>
         </div>
-        
-        <p className="text-white/30 text-sm font-light tracking-wide animate-fade-in" style={{animationDelay: '0.6s'}}>
-            {isMuted ? "Tap to speak" : "Listening..."}
-        </p>
       </div>
     </div>
   );

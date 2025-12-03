@@ -1,0 +1,7 @@
+{
+  "name": "Astro Buddy",
+  "description": "An immersive 3D astrology companion with voice interaction and dating insights.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
